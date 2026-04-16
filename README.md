@@ -24,7 +24,7 @@ All original Obsidian Web Clipper features, plus:
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/user/obsidian-clipper-enhanced.git
+   git clone https://github.com/huiqimao/obsidian-clipper-enhanced.git
    cd obsidian-clipper-enhanced
    ```
 
@@ -46,7 +46,7 @@ All original Obsidian Web Clipper features, plus:
 
 ### From release
 
-Download the latest `.zip` from the [Releases](https://github.com/user/obsidian-clipper-enhanced/releases) page, extract it, and load unpacked as above.
+Download the latest `.zip` from the [Releases](https://github.com/huiqimao/obsidian-clipper-enhanced/releases) page, extract it, and load unpacked as above.
 
 ## Feishu / Lark Setup
 
@@ -161,7 +161,7 @@ Based on [Obsidian Web Clipper](https://github.com/obsidianmd/obsidian-clipper).
 
 1. 克隆仓库：
    ```bash
-   git clone https://github.com/user/obsidian-clipper-enhanced.git
+   git clone https://github.com/huiqimao/obsidian-clipper-enhanced.git
    cd obsidian-clipper-enhanced
    ```
 
@@ -183,7 +183,7 @@ Based on [Obsidian Web Clipper](https://github.com/obsidianmd/obsidian-clipper).
 
 ### 从 Release 安装
 
-从 [Releases](https://github.com/user/obsidian-clipper-enhanced/releases) 页面下载最新的 `.zip` 文件，解压后按上述方式加载。
+从 [Releases](https://github.com/huiqimao/obsidian-clipper-enhanced/releases) 页面下载最新的 `.zip` 文件，解压后按上述方式加载。
 
 ## 飞书/Lark 配置
 
