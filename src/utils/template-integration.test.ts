@@ -126,7 +126,7 @@ describe('Template fixtures', () => {
 		expect(fixtures.length).toBeGreaterThan(0);
 	});
 
-	test.each(fixtures)('$name', async ({ name, jsonPath, htmlPath }) => {
+	test.each(fixtures)('$name', async ({ name, jsonPath, htmlPath }: { name: string, jsonPath: string, htmlPath: string }) => {
 		const template: FixtureTemplate = JSON.parse(readFileSync(jsonPath, 'utf-8'));
 		const html = readFileSync(htmlPath, 'utf-8');
 

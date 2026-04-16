@@ -4,7 +4,7 @@
 // via parameters.
 
 import { sanitizeFileName, getDomain, escapeDoubleQuotes } from './string-utils';
-import { Property } from '../types/types';
+import type { Property, RichMediaExtractionResult } from '../types/types';
 import dayjs from 'dayjs';
 
 // ---------------------------------------------------------------------------
@@ -31,6 +31,18 @@ export interface BuildVariablesParams {
 	schemaOrgData?: any;
 	metaTags?: { name?: string | null; property?: string | null; content: string | null }[];
 	extractedContent?: Record<string, string>;
+	richMedia?: RichMediaExtractionResult;
+}
+
+function buildRichMediaMarkdown(result: RichMediaExtractionResult): string {
+	return result.assets
+		.map((asset) => {
+			const url = asset.markdownUrl || asset.resolvedUrl || asset.fetchUrl;
+			const alt = (asset.altText || asset.caption || '').replace(/\]/g, '\\]');
+			const imageLine = `![${alt}](${url})`;
+			return asset.caption ? `${imageLine}\n*${asset.caption}*` : imageLine;
+		})
+		.join('\n\n');
 }
 
 /**
@@ -63,7 +75,28 @@ export function buildVariables(params: BuildVariablesParams): Record<string, str
 		'{{url}}': currentUrl.trim(),
 		'{{language}}': (params.language || '').trim(),
 		'{{words}}': (params.wordCount ?? 0).toString(),
+		'{{richMedia}}': '[]',
+		'{{richMediaImages}}': '[]',
+		'{{richMediaCanvas}}': '[]',
+		'{{richMediaMarkdown}}': '',
 	};
+
+	if (params.richMedia) {
+		const richMediaAssets = params.richMedia.assets || [];
+		const richMediaImages = richMediaAssets.filter((asset) => asset.type === 'image');
+		const richMediaCanvas = richMediaAssets.filter((asset) => asset.type === 'canvas' || asset.type === 'sketch');
+		variables['{{richMedia}}'] = JSON.stringify(richMediaAssets);
+		variables['{{richMediaImages}}'] = JSON.stringify(richMediaImages);
+		variables['{{richMediaCanvas}}'] = JSON.stringify(richMediaCanvas);
+		variables['{{richMediaMarkdown}}'] = buildRichMediaMarkdown(params.richMedia);
+
+		if (!variables['{{image}}']) {
+			const representativeAsset = richMediaImages[0] || richMediaCanvas[0];
+			if (representativeAsset) {
+				variables['{{image}}'] = representativeAsset.markdownUrl || representativeAsset.resolvedUrl || representativeAsset.fetchUrl;
+			}
+		}
+	}
 
 	// Add extracted content (e.g. defuddle variables like transcript)
 	if (params.extractedContent) {

@@ -107,6 +107,10 @@ describe('buildVariables', () => {
 		expect(vars['{{selection}}']).toBe('');
 		expect(vars['{{selectionHtml}}']).toBe('');
 		expect(vars['{{highlights}}']).toBe('');
+		expect(vars['{{richMedia}}']).toBe('[]');
+		expect(vars['{{richMediaImages}}']).toBe('[]');
+		expect(vars['{{richMediaCanvas}}']).toBe('[]');
+		expect(vars['{{richMediaMarkdown}}']).toBe('');
 	});
 
 	test('includes selection and highlights when provided', () => {
@@ -137,6 +141,50 @@ describe('buildVariables', () => {
 		}));
 		expect(vars['{{transcript}}']).toBe('Hello world transcript');
 		expect(vars['{{summary}}']).toBe('A summary');
+	});
+
+	test('adds rich media variables and falls back to representative image', () => {
+		const vars = buildVariables(makeParams({
+			image: '',
+			richMedia: {
+				platform: 'feishu',
+				authContext: {
+					platform: 'feishu',
+					strategy: 'credentials',
+					needsRelay: false,
+				},
+				assets: [
+					{
+						id: 'asset-1',
+						platform: 'feishu',
+						type: 'image',
+						fetchUrl: 'https://example.com/image-1.png',
+						resolvedUrl: 'https://example.com/image-1.png',
+						markdownUrl: 'https://example.com/image-1.png',
+						altText: 'inline image',
+						authRequired: true,
+					},
+					{
+						id: 'asset-2',
+						platform: 'feishu',
+						type: 'canvas',
+						fetchUrl: 'https://example.com/canvas.png',
+						resolvedUrl: 'https://example.com/canvas.png',
+						markdownUrl: 'https://example.com/canvas.png',
+						caption: 'diagram preview',
+						authRequired: true,
+					},
+				],
+				enrichedHtml: '<figure><img src="https://example.com/image-1.png"></figure>',
+			},
+		}));
+
+		expect(JSON.parse(vars['{{richMedia}}'])).toHaveLength(2);
+		expect(JSON.parse(vars['{{richMediaImages}}'])).toHaveLength(1);
+		expect(JSON.parse(vars['{{richMediaCanvas}}'])).toHaveLength(1);
+		expect(vars['{{richMediaMarkdown}}']).toContain('![inline image](https://example.com/image-1.png)');
+		expect(vars['{{richMediaMarkdown}}']).toContain('![diagram preview](https://example.com/canvas.png)');
+		expect(vars['{{image}}']).toBe('https://example.com/image-1.png');
 	});
 
 	test('adds meta tags as template variables', () => {

@@ -1,7 +1,7 @@
-import { ExtractedContent } from '../types/types';
+import type { ExtractedContent, RichMediaExtractionResult } from '../types/types';
 import { createMarkdownContent } from 'defuddle/full';
 import { sanitizeFileName } from './string-utils';
-import { buildVariables, addSchemaOrgDataToVariables } from './shared';
+import { buildVariables } from './shared';
 import browser from './browser-polyfill';
 import { debugLog } from './debug';
 import dayjs from 'dayjs';
@@ -58,6 +58,7 @@ interface ContentResponse {
 	wordCount: number;
 	language: string;
 	metaTags: { name?: string | null; property?: string | null; content: string | null }[];
+	richMedia?: RichMediaExtractionResult;
 }
 
 async function sendExtractRequest(tabId: number): Promise<ContentResponse> {
@@ -137,23 +138,28 @@ export async function initializePageContent(
 	site: string,
 	wordCount: number,
 	language: string,
-	metaTags: { name?: string | null; property?: string | null; content: string | null }[]
+	metaTags: { name?: string | null; property?: string | null; content: string | null }[],
+	richMedia?: RichMediaExtractionResult
 ) {
 	try {
 		currentUrl = currentUrl.replace(/#:~:text=[^&]+(&|$)/, '');
 
 		let selectedMarkdown = '';
+		let markdownSourceHtml = content;
 		if (selectedHtml) {
-			content = selectedHtml;
 			selectedMarkdown = createMarkdownContent(selectedHtml, currentUrl);
+			markdownSourceHtml = selectedHtml;
 		}
+
+		content = markdownSourceHtml;
 
 		// Process highlights after getting the base content
 		if (generalSettings.highlighterEnabled && generalSettings.highlightBehavior !== 'no-highlights' && highlights && highlights.length > 0) {
 			content = processHighlights(content, highlights);
 		}
 
-		const markdownBody = createMarkdownContent(content, currentUrl);
+		// If API-extracted markdown is available, use it directly instead of HTML-to-markdown conversion
+		const markdownBody = richMedia?.markdownContent || createMarkdownContent(content, currentUrl);
 
 		// Convert each highlight to markdown individually
 		const highlightsData = highlights.map(highlight => {
@@ -195,6 +201,7 @@ export async function initializePageContent(
 			schemaOrgData,
 			metaTags,
 			extractedContent,
+			richMedia,
 		});
 
 		debugLog('Variables', 'Available variables:', currentVariables);

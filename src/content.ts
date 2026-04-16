@@ -9,6 +9,9 @@ import { flattenShadowDom } from './utils/flatten-shadow-dom';
 import { saveFile } from './utils/file-utils';
 import { debugLog } from './utils/debug';
 
+import type { RichMediaExtractionResult } from './types/types';
+import { enrichContentWithRichMedia, extractRichMediaAssets } from './utils/rich-media-extractor';
+
 declare global {
 	interface Window {
 		obsidianClipperGeneration?: number;
@@ -29,15 +32,19 @@ declare global {
 	// In Reader mode, extract from the article's original HTML (before
 	// wireTranscript restructures it) with a neutral URL so site-specific
 	// extractors don't re-fetch content (e.g. YouTube)
-	function parseForClip(doc: Document) {
+	function parseForClip(doc: Document, richMediaResult?: RichMediaExtractionResult) {
 		const readerArticle = doc.querySelector('.obsidian-reader-active .obsidian-reader-content article');
 		if (readerArticle) {
 			const readerDoc = doc.implementation.createHTMLDocument();
 			const originalHtml = readerArticle.getAttribute('data-original-html');
 			readerDoc.body.innerHTML = originalHtml || readerArticle.innerHTML;
-			return new Defuddle(readerDoc, { url: '' }).parse();
+			const parsed = new Defuddle(readerDoc, { url: '' }).parse();
+			parsed.content = enrichContentWithRichMedia(parsed.content, richMediaResult);
+			return parsed;
 		}
-		return new Defuddle(doc, { url: doc.URL }).parse();
+		const parsed = new Defuddle(doc, { url: doc.URL }).parse();
+		parsed.content = enrichContentWithRichMedia(parsed.content, richMediaResult);
+		return parsed;
 	}
 
 	let isHighlighterMode = false;
@@ -79,6 +86,7 @@ declare global {
 		container.id = containerId;
 		container.classList.add('is-open');
 
+		// @ts-ignore
 		const { clipperIframeWidth, clipperIframeHeight } = await browser.storage.local.get(['clipperIframeWidth', 'clipperIframeHeight']);
 		if (clipperIframeWidth) {
 			container.style.width = `${clipperIframeWidth}px`;
@@ -89,6 +97,7 @@ declare global {
 
 		const iframe = document.createElement('iframe');
 		iframe.id = iframeId;
+		// @ts-ignore
 		iframe.src = browser.runtime.getURL('side-panel.html?context=iframe');
 		container.appendChild(iframe);
 
@@ -117,7 +126,7 @@ declare global {
 
 	function addResizeListener(container: HTMLElement, handle: HTMLElement, direction: string) {
 		let isResizing = false;
-		let startX: number, startY: number, startWidth: number, startHeight: number, startLeft: number, startTop: number;
+		let startX: number, startY: number, startWidth: number, startHeight: number, startTop: number;
 	
 		handle.onmousedown = (e) => {
 			e.stopPropagation();
@@ -126,7 +135,6 @@ declare global {
 			startY = e.clientY;
 			startWidth = container.offsetWidth;
 			startHeight = container.offsetHeight;
-			startLeft = container.offsetLeft;
 			startTop = container.offsetTop;
 
 			document.body.style.cursor = window.getComputedStyle(handle).cursor;
@@ -182,6 +190,7 @@ declare global {
 				
 				const newWidth = container.offsetWidth;
 				const newHeight = container.offsetHeight;
+				// @ts-ignore
 				browser.storage.local.set({ clipperIframeWidth: newWidth, clipperIframeHeight: newHeight });
 
 				highlighter.repositionHighlights();
@@ -193,6 +202,7 @@ declare global {
 	}
 
 	// Firefox
+	// @ts-ignore
 	browser.runtime.sendMessage({ action: "contentScriptLoaded" });
 
 	interface ContentResponse {
@@ -214,9 +224,10 @@ declare global {
 		wordCount: number;
 		language: string;
 		metaTags: { name?: string | null; property?: string | null; content: string | null }[];
+		richMedia?: RichMediaExtractionResult;
 	}
 
-	browser.runtime.onMessage.addListener((request: any, sender, sendResponse) => {
+	browser.runtime.onMessage.addListener((request: any, _sender: unknown, sendResponse: (response?: unknown) => void) => {
 		// If a newer generation of this content script has been injected,
 		// yield to it rather than responding from a potentially stale context.
 		if (window.obsidianClipperGeneration !== myGeneration) {
@@ -259,12 +270,13 @@ declare global {
 		}
 
 		if (request.action === "copyMarkdownToClipboard") {
-			flattenShadowDom(document).then(() => {
+			flattenShadowDom(document).then(async () => {
 				try {
-					const defuddled = parseForClip(document);
+					const richMediaResult = await extractRichMediaAssets({ document, url: document.URL });
+					const defuddled = parseForClip(document, richMediaResult);
 
-					// Convert HTML content to markdown
-					const markdown = createMarkdownContent(defuddled.content, document.URL);
+					// Convert HTML content to markdown (or use API-extracted markdown directly)
+					const markdown = richMediaResult.markdownContent || createMarkdownContent(defuddled.content, document.URL);
 
 					// Copy to clipboard
 					const textArea = document.createElement("textarea");
@@ -286,8 +298,9 @@ declare global {
 		if (request.action === "saveMarkdownToFile") {
 			flattenShadowDom(document).then(async () => {
 				try {
-					const defuddled = parseForClip(document);
-					const markdown = createMarkdownContent(defuddled.content, document.URL);
+					const richMediaResult = await extractRichMediaAssets({ document, url: document.URL });
+					const defuddled = parseForClip(document, richMediaResult);
+					const markdown = richMediaResult.markdownContent || createMarkdownContent(defuddled.content, document.URL);
 					const title = defuddled.title || document.title || 'Untitled';
 					const fileName = title.replace(/[/\\?%*:|"<>]/g, '-');
 					await saveFile({
@@ -308,6 +321,8 @@ declare global {
 			// Flatten shadow DOM before extraction (async, needs main world)
 			const flattenTimeout = new Promise<void>(resolve => setTimeout(resolve, 3000));
 			Promise.race([flattenShadowDom(document), flattenTimeout]).then(async () => {
+				const richMediaResult = await extractRichMediaAssets({ document, url: document.URL });
+				const normalizedHtml = richMediaResult.enrichedHtml || document.body.innerHTML;
 				let selectedHtml = '';
 				const selection = window.getSelection();
 
@@ -319,6 +334,24 @@ declare global {
 					selectedHtml = div.innerHTML;
 				}
 
+				const parser = new DOMParser();
+				const normalizedDoc = parser.parseFromString(`<!DOCTYPE html><html><body>${normalizedHtml}</body></html>`, 'text/html');
+
+				if (selectedHtml) {
+					const selectedDoc = parser.parseFromString(`<!DOCTYPE html><html><body>${selectedHtml}</body></html>`, 'text/html');
+					selectedDoc.querySelectorAll('img, figure, [data-rich-media-id]').forEach(node => {
+						const marker = node.getAttribute('data-rich-media-id') || node.getAttribute('src');
+						if (!marker) {
+							return;
+						}
+						const replacement = normalizedDoc.querySelector(`[data-rich-media-id="${marker}"]`) || normalizedDoc.querySelector(`img[src="${marker}"]`)?.closest('figure') || normalizedDoc.querySelector(`img[src="${marker}"]`);
+						if (replacement) {
+							node.replaceWith(replacement.cloneNode(true));
+						}
+					});
+					selectedHtml = selectedDoc.body.innerHTML;
+				}
+
 				// Use parseAsync to ensure async variables like {{transcript}} are available.
 				// If it hangs (e.g. another extension has corrupted fetch), fall back to sync parse.
 				const defuddle = new Defuddle(document, { url: document.URL });
@@ -327,13 +360,12 @@ declare global {
 				);
 				const defuddled = await Promise.race([defuddle.parseAsync(), parseTimeout])
 					.catch(() => defuddle.parse());
+				defuddled.content = enrichContentWithRichMedia(defuddled.content, richMediaResult);
 				const extractedContent: { [key: string]: string } = {
 					...defuddled.variables,
 				};
 
 				// Create a new DOMParser
-				const parser = new DOMParser();
-				// Parse the document's HTML
 				const doc = parser.parseFromString(document.documentElement.outerHTML, 'text/html');
 
 				// Remove all script and style elements
@@ -370,12 +402,39 @@ declare global {
 					});
 				});
 
+				const enrichedFullHtmlDoc = parser.parseFromString(`<!DOCTYPE html><html><body>${normalizedHtml}</body></html>`, 'text/html');
+				enrichedFullHtmlDoc.querySelectorAll('*').forEach(el => el.removeAttribute('style'));
+				enrichedFullHtmlDoc.querySelectorAll('[src], [href]').forEach(element => {
+					['src', 'href', 'srcset'].forEach(attr => {
+						const value = element.getAttribute(attr);
+						if (!value) return;
+						if (attr === 'srcset') {
+							const newSrcset = value.split(',').map(src => {
+								const [url, size] = src.trim().split(' ');
+								try {
+									const absoluteUrl = new URL(url, document.baseURI).href;
+									return `${absoluteUrl}${size ? ' ' + size : ''}`;
+								} catch {
+									return src;
+								}
+							}).join(', ');
+							element.setAttribute(attr, newSrcset);
+						} else if (!value.startsWith('http') && !value.startsWith('data:') && !value.startsWith('#') && !value.startsWith('//')) {
+							try {
+								element.setAttribute(attr, new URL(value, document.baseURI).href);
+							} catch {
+								// Keep original value if absolutizing fails.
+							}
+						}
+					});
+				});
+
 				// Get the modified HTML without scripts, styles, and style attributes
-				const cleanedHtml = doc.documentElement.outerHTML;
+				const cleanedHtml = enrichedFullHtmlDoc.documentElement.outerHTML;
 
 				const response: ContentResponse = {
 					author: defuddled.author,
-					content: defuddled.content,
+					content: richMediaResult.markdownContent || defuddled.content,
 					description: defuddled.description,
 					domain: getDomain(document.URL),
 					extractedContent: extractedContent,
@@ -391,7 +450,8 @@ declare global {
 					site: defuddled.site,
 					title: defuddled.title,
 					wordCount: defuddled.wordCount,
-					metaTags: defuddled.metaTags || []
+					metaTags: defuddled.metaTags || [],
+					richMedia: richMediaResult
 				};
 				sendResponse(response);
 			}).catch((error: unknown) => {
@@ -418,7 +478,8 @@ declare global {
 			sendResponse({ success: true });
 			return true;
 		} else if (request.action === "getHighlighterMode") {
-			browser.runtime.sendMessage({ action: "getHighlighterMode" }).then(sendResponse);
+			// @ts-ignore
+			browser.runtime.sendMessage({ action: "getHighlighterMode" }).then((response: any) => sendResponse(response));
 			return true;
 		} else if (request.action === "toggleHighlighter") {
 			ensureHighlighterCSS();
@@ -472,7 +533,7 @@ declare global {
 				}
 
 				if (elementToHighlight) {
-					const xpath = highlighter.getElementXPath(elementToHighlight);
+					highlighter.getElementXPath(elementToHighlight);
 					highlighter.highlightElement(elementToHighlight);
 				} else {
 					console.warn('Could not find element to highlight. Info:', request.targetElementInfo);
@@ -485,11 +546,12 @@ declare global {
 			updateHasHighlights();
 			sendResponse({ success: true });
 		} else if (request.action === "getHighlighterState") {
+			// @ts-ignore
 			browser.runtime.sendMessage({ action: "getHighlighterMode" })
-				.then(response => {
+				.then((response: any) => {
 					sendResponse(response);
 				})
-				.catch(error => {
+				.catch((error: unknown) => {
 					console.error("Error getting highlighter mode:", error);
 					sendResponse({ isActive: false });
 				});
@@ -529,6 +591,7 @@ declare global {
 		await loadSettings();
 
 		if (generalSettings.alwaysShowHighlights) {
+			// @ts-ignore
 			const result = await browser.storage.local.get('highlights');
 			const allHighlights = (result.highlights || {}) as Record<string, unknown>;
 			if (allHighlights[window.location.href]) {

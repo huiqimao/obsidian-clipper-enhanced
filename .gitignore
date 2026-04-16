@@ -23,3 +23,12 @@ assets/shared
 .cursorrules
 .env
 context/
+
+# Logs and debug output
+log/
+
+# Local planning docs (not part of the extension)
+plans/
+
+# Binary helpers
+.bin/

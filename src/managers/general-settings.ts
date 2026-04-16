@@ -227,6 +227,7 @@ export function initializeGeneralSettings(): void {
 		initializeHighlighterSettings();
 		initializeExportHighlightsButton();
 		initializeSaveBehaviorDropdown();
+		initializeFeishuSettings();
 		await initializeUsageChart();
 
 		// Initialize feedback modal close button
@@ -512,4 +513,124 @@ function initializeSettingDropdown(
 	dropdown.addEventListener('change', () => {
 		onChange(dropdown.value);
 	});
+}
+
+function initializeFeishuSettings(): void {
+	const appIdInput = document.getElementById('feishu-app-id') as HTMLInputElement;
+	const appSecretInput = document.getElementById('feishu-app-secret') as HTMLInputElement;
+	const authorizeBtn = document.getElementById('feishu-authorize-btn') as HTMLButtonElement;
+	const authStatus = document.getElementById('feishu-auth-status') as HTMLElement;
+	const redirectUriInput = document.getElementById('feishu-redirect-uri') as HTMLInputElement;
+	if (!appIdInput || !appSecretInput) return;
+
+	function showValidationError(msg: string | null): void {
+		if (!authStatus) return;
+		if (msg) {
+			authStatus.textContent = msg;
+			authStatus.style.color = 'var(--text-error, #e74c3c)';
+		} else {
+			authStatus.style.color = '';
+		}
+	}
+
+	function validateInputs(): boolean {
+		const appId = appIdInput.value.trim();
+		const appSecret = appSecretInput.value.trim();
+		if (!appId || !appSecret) return true; // empty is fine until they try to authorize
+		if (!appId.startsWith('cli_')) {
+			showValidationError('App ID should start with "cli_". Please check the Feishu App Console.');
+			return false;
+		}
+		if (appSecret.length < 16) {
+			showValidationError('App Secret looks too short. Please check the Feishu App Console.');
+			return false;
+		}
+		showValidationError(null);
+		return true;
+	}
+
+	// Show redirect URI so users can register it in their Feishu app
+	if (redirectUriInput) {
+		try {
+			const uri = chrome.identity.getRedirectURL();
+			redirectUriInput.value = uri;
+			redirectUriInput.addEventListener('click', () => {
+				navigator.clipboard.writeText(uri).then(() => {
+					redirectUriInput.style.borderColor = 'var(--text-success)';
+					setTimeout(() => { redirectUriInput.style.borderColor = ''; }, 1500);
+				});
+			});
+		} catch {
+			redirectUriInput.value = '(unavailable in this browser)';
+		}
+	}
+
+	appIdInput.value = generalSettings.feishuSettings?.appId || '';
+	appSecretInput.value = generalSettings.feishuSettings?.appSecret || '';
+
+	const save = debounce(() => {
+		if (!validateInputs()) return;
+		saveSettings({
+			feishuSettings: {
+				appId: appIdInput.value.trim(),
+				appSecret: appSecretInput.value.trim(),
+			}
+		});
+	}, 500);
+
+	appIdInput.addEventListener('input', save);
+	appSecretInput.addEventListener('input', save);
+
+	// Check existing auth status
+	browser.storage.local.get('feishu_user_token').then((data: any) => {
+		if (data.feishu_user_token?.access_token) {
+			const expiresAt = new Date(data.feishu_user_token.expires_at);
+			const isExpired = Date.now() > data.feishu_user_token.expires_at;
+			if (authStatus) {
+				authStatus.textContent = isExpired
+					? `Token expired at ${expiresAt.toLocaleString()}. Will auto-refresh on next use.`
+					: `Authorized. Token valid until ${expiresAt.toLocaleString()}.`;
+			}
+			if (authorizeBtn) {
+				authorizeBtn.textContent = 'Re-authorize';
+			}
+		}
+	});
+
+	if (authorizeBtn) {
+		authorizeBtn.addEventListener('click', async () => {
+			const appId = appIdInput.value.trim();
+			const appSecret = appSecretInput.value.trim();
+			if (!appId || !appSecret) {
+				if (authStatus) authStatus.textContent = 'Please enter App ID and App Secret first.';
+				return;
+			}
+			if (!validateInputs()) return;
+
+			// Save credentials first
+			await saveSettings({
+				feishuSettings: { appId, appSecret }
+			});
+
+			if (authStatus) authStatus.textContent = 'Authorizing...';
+			authorizeBtn.disabled = true;
+
+			try {
+				const response = await browser.runtime.sendMessage({
+					action: 'feishuAuthorize',
+				}) as { success: boolean; error?: string };
+
+				if (response?.success) {
+					if (authStatus) authStatus.textContent = 'Authorized successfully!';
+					authorizeBtn.textContent = 'Re-authorize';
+				} else {
+					if (authStatus) authStatus.textContent = `Authorization failed: ${response?.error || 'Unknown error'}`;
+				}
+			} catch (err) {
+				if (authStatus) authStatus.textContent = `Error: ${(err as Error).message}`;
+			} finally {
+				authorizeBtn.disabled = false;
+			}
+		});
+	}
 }

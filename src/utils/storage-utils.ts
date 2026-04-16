@@ -2,6 +2,7 @@ import browser from './browser-polyfill';
 import { Settings, ModelConfig, PropertyType, HistoryEntry, Provider, Rating } from '../types/types';
 import { debugLog } from './debug';
 import { copyToClipboard } from 'core/popup';
+import { encryptSecret, decryptSecret } from './crypto-utils';
 
 export type { Settings, ModelConfig, PropertyType, HistoryEntry, Provider, Rating };
 
@@ -37,6 +38,10 @@ export let generalSettings: Settings = {
 		autoScroll: true,
 		highlightActiveLine: true,
 		customCss: ''
+	},
+	feishuSettings: {
+		appId: '',
+		appSecret: '',
 	},
 	stats: {
 		addToObsidian: 0,
@@ -96,6 +101,10 @@ interface StorageData {
 		interpreterAutoRun?: boolean;
 		defaultPromptContext?: string;
 	};
+	feishu_settings?: {
+		appId?: string;
+		appSecret?: string;
+	};
 	property_types?: PropertyType[];
 	stats?: {
 		addToObsidian: number;
@@ -132,6 +141,10 @@ export async function loadSettings(): Promise<Settings> {
 		defaultPromptContext: '',
 		propertyTypes: [],
 		saveBehavior: 'addToObsidian',
+		feishuSettings: {
+			appId: '',
+			appSecret: '',
+		},
 		readerSettings: {
 			fontSize: 16,
 			lineHeight: 1.6,
@@ -193,6 +206,10 @@ export async function loadSettings(): Promise<Settings> {
 		interpreterAutoRun: data.interpreter_settings?.interpreterAutoRun ?? defaultSettings.interpreterAutoRun,
 		defaultPromptContext: data.interpreter_settings?.defaultPromptContext || defaultSettings.defaultPromptContext,
 		propertyTypes: data.property_types || defaultSettings.propertyTypes,
+		feishuSettings: {
+			appId: data.feishu_settings?.appId ?? defaultSettings.feishuSettings.appId,
+			appSecret: await decryptSecret(data.feishu_settings?.appSecret ?? defaultSettings.feishuSettings.appSecret),
+		},
 		readerSettings: {
 			fontSize: data.reader_settings?.fontSize ?? defaultSettings.readerSettings.fontSize,
 			lineHeight: data.reader_settings?.lineHeight ?? defaultSettings.readerSettings.lineHeight,
@@ -225,6 +242,8 @@ export async function saveSettings(settings?: Partial<Settings>): Promise<void> 
 		generalSettings = { ...generalSettings, ...settings };
 	}
 
+	const encryptedAppSecret = await encryptSecret(generalSettings.feishuSettings.appSecret);
+
 	await browser.storage.sync.set({
 		vaults: generalSettings.vaults,
 		general_settings: {
@@ -249,6 +268,10 @@ export async function saveSettings(settings?: Partial<Settings>): Promise<void> 
 			defaultPromptContext: generalSettings.defaultPromptContext
 		},
 		property_types: generalSettings.propertyTypes,
+		feishu_settings: {
+			appId: generalSettings.feishuSettings.appId,
+			appSecret: encryptedAppSecret,
+		},
 		reader_settings: {
 			fontSize: generalSettings.readerSettings.fontSize,
 			lineHeight: generalSettings.readerSettings.lineHeight,

@@ -234,6 +234,361 @@ browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime
 			return true;
 		}
 
+		if (typedRequest.action === "feishuAuthorize") {
+			(async () => {
+				try {
+					const feishuSettings = await browser.storage.sync.get('feishu_settings') as { feishu_settings?: { appId?: string; appSecret?: string } };
+					const appId = feishuSettings.feishu_settings?.appId;
+					const appSecret = feishuSettings.feishu_settings?.appSecret;
+
+					if (!appId || !appSecret) {
+						sendResponse({ success: false, error: 'App ID and App Secret are required' });
+						return;
+					}
+
+					// Use Chrome identity API's built-in redirect URL
+					const redirectUri = chrome.identity.getRedirectURL();
+					const state = Math.random().toString(36).slice(2);
+					const authBase = 'https://accounts.larksuite.com';
+
+					const authUrl = `${authBase}/open-apis/authen/v1/authorize?` +
+						`client_id=${encodeURIComponent(appId)}` +
+						`&response_type=code` +
+						`&redirect_uri=${encodeURIComponent(redirectUri)}` +
+						`&scope=${encodeURIComponent('docx:document:readonly docs:document.comment:read sheets:spreadsheet:read wiki:wiki:readonly offline_access')}` +
+						`&state=${state}`;
+
+					console.log('[Feishu BG] Starting OAuth flow, redirect URI:', redirectUri);
+
+					// Launch the auth flow in a popup window
+					const responseUrl = await new Promise<string>((resolve, reject) => {
+						chrome.identity.launchWebAuthFlow(
+							{ url: authUrl, interactive: true },
+							(callbackUrl) => {
+								if (chrome.runtime.lastError) {
+									reject(new Error(chrome.runtime.lastError.message));
+								} else if (callbackUrl) {
+									resolve(callbackUrl);
+								} else {
+									reject(new Error('No callback URL returned'));
+								}
+							}
+						);
+					});
+
+					// Extract the authorization code from the callback URL
+					const callbackParams = new URL(responseUrl).searchParams;
+					const code = callbackParams.get('code');
+					const error = callbackParams.get('error');
+
+					if (error || !code) {
+						sendResponse({ success: false, error: error || 'No authorization code received' });
+						return;
+					}
+
+					// Exchange code for user_access_token
+					const apiBase = 'https://open.larksuite.com';
+					console.log('[Feishu BG] Exchanging auth code for user_access_token...');
+					const resp = await fetch(`${apiBase}/open-apis/authen/v2/oauth/token`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json; charset=utf-8' },
+						body: JSON.stringify({
+							grant_type: 'authorization_code',
+							client_id: appId,
+							client_secret: appSecret,
+							code,
+							redirect_uri: redirectUri,
+						}),
+					});
+
+					const json = await resp.json();
+					if (json.code !== 0 || !json.access_token) {
+						console.warn('[Feishu BG] Token exchange failed:', json);
+						sendResponse({ success: false, error: json.error_description || json.msg || `code ${json.code}` });
+						return;
+					}
+
+					// Store tokens
+					await browser.storage.local.set({
+						feishu_user_token: {
+							access_token: json.access_token,
+							refresh_token: json.refresh_token,
+							expires_at: Date.now() + (json.expires_in * 1000),
+							refresh_expires_at: Date.now() + ((json.refresh_token_expires_in || 604800) * 1000),
+						},
+					});
+
+					console.log('[Feishu BG] User access token stored successfully');
+					sendResponse({ success: true });
+				} catch (err) {
+					console.error('[Feishu BG] OAuth error:', err);
+					sendResponse({ success: false, error: (err as Error).message });
+				}
+			})();
+			return true;
+		}
+
+		async function fetchComments(apiBase: string, docId: string, headers: Record<string, string>): Promise<unknown[]> {
+			const comments: unknown[] = [];
+			try {
+				let commentPageToken: string | undefined;
+				for (let p = 0; p < 10; p++) {
+					const params = new URLSearchParams({ file_type: 'docx', page_size: '100' });
+					if (commentPageToken) params.set('page_token', commentPageToken);
+					const resp = await fetch(
+						`${apiBase}/open-apis/drive/v1/files/${docId}/comments?${params}`,
+						{ headers },
+					);
+					if (!resp.ok) break;
+					const json = await resp.json();
+					if (json.code !== 0) break;
+					comments.push(...(json.data?.items || []));
+					if (!json.data?.has_more) break;
+					commentPageToken = json.data.page_token;
+				}
+				if (comments.length > 0) {
+					console.log(`[Feishu BG] Fetched ${comments.length} comments`);
+				}
+			} catch (e) {
+				console.warn('[Feishu BG] Failed to fetch comments:', e);
+			}
+			return comments;
+		}
+
+		if (typedRequest.action === "feishuFetchDoc" || typedRequest.action === "feishuFetchBlocks") {
+			const req = typedRequest as unknown as {
+				docType?: 'docx' | 'wiki';
+				docToken?: string;
+				documentId?: string;
+				apiBase: string;
+			};
+			const apiBase = req.apiBase;
+			const docType = req.docType || 'docx';
+			const docToken = req.docToken || req.documentId || '';
+
+			(async () => {
+				try {
+					// Get stored user_access_token
+					const stored = await browser.storage.local.get('feishu_user_token') as {
+						feishu_user_token?: {
+							access_token: string;
+							refresh_token: string;
+							expires_at: number;
+							refresh_expires_at: number;
+						};
+					};
+
+					let accessToken = stored.feishu_user_token?.access_token;
+
+					if (!accessToken) {
+						sendResponse({ success: false, error: 'Not authorized. Please authorize in Feishu settings.' });
+						return;
+					}
+
+					// Refresh token if expired
+					if (stored.feishu_user_token && Date.now() > stored.feishu_user_token.expires_at) {
+						console.log('[Feishu BG] Token expired, refreshing...');
+						const feishuSettings = await browser.storage.sync.get('feishu_settings') as { feishu_settings?: { appId?: string; appSecret?: string } };
+						const appId = feishuSettings.feishu_settings?.appId;
+						const appSecret = feishuSettings.feishu_settings?.appSecret;
+
+						if (appId && appSecret && stored.feishu_user_token.refresh_token) {
+							const refreshResp = await fetch(`${apiBase}/open-apis/authen/v2/oauth/token`, {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json; charset=utf-8' },
+								body: JSON.stringify({
+									grant_type: 'refresh_token',
+									client_id: appId,
+									client_secret: appSecret,
+									refresh_token: stored.feishu_user_token.refresh_token,
+								}),
+							});
+
+							const refreshJson = await refreshResp.json();
+							if (refreshJson.access_token) {
+								accessToken = refreshJson.access_token;
+								await browser.storage.local.set({
+									feishu_user_token: {
+										access_token: refreshJson.access_token,
+										refresh_token: refreshJson.refresh_token || stored.feishu_user_token.refresh_token,
+										expires_at: Date.now() + (refreshJson.expires_in * 1000),
+										refresh_expires_at: Date.now() + ((refreshJson.refresh_token_expires_in || 604800) * 1000),
+									},
+								});
+								console.log('[Feishu BG] Token refreshed successfully');
+							} else {
+								sendResponse({ success: false, error: 'Token expired and refresh failed. Please re-authorize.' });
+								return;
+							}
+						} else {
+							sendResponse({ success: false, error: 'Token expired. Please re-authorize.' });
+							return;
+						}
+					}
+
+					const authHeaders = { Authorization: `Bearer ${accessToken}` };
+
+					// For wiki pages, resolve the wiki_token to a docx obj_token first
+					let documentId = docToken;
+					if (docType === 'wiki') {
+						console.log('[Feishu BG] Resolving wiki token:', docToken);
+						const nodeResp = await fetch(
+							`${apiBase}/open-apis/wiki/v2/spaces/get_node?token=${docToken}`,
+							{ headers: authHeaders },
+						);
+						if (nodeResp.ok) {
+							const nodeJson = await nodeResp.json();
+							if (nodeJson.code === 0 && nodeJson.data?.node?.obj_token) {
+								documentId = nodeJson.data.node.obj_token;
+								console.log('[Feishu BG] Wiki resolved to docx:', documentId);
+							} else {
+								console.warn('[Feishu BG] Wiki node resolution failed:', nodeJson.msg);
+							}
+						}
+					}
+
+					// Strategy 1: Try /docs/v1/content API for direct markdown
+					console.log('[Feishu BG] Trying /docs/v1/content API...');
+					try {
+						const contentParams = new URLSearchParams({
+							doc_token: documentId,
+							doc_type: 'docx',
+							content_type: 'markdown',
+						});
+						const contentResp = await fetch(
+							`${apiBase}/open-apis/docs/v1/content?${contentParams}`,
+							{ headers: authHeaders },
+						);
+						if (contentResp.ok) {
+							const contentJson = await contentResp.json();
+							if (contentJson.code === 0 && contentJson.data?.content) {
+								console.log('[Feishu BG] Got markdown from content API');
+
+								// Also fetch comments
+								const comments = await fetchComments(apiBase, documentId, authHeaders);
+
+								sendResponse({
+									success: true,
+									markdown: contentJson.data.content,
+									accessToken,
+									comments,
+								});
+								return;
+							}
+							console.warn('[Feishu BG] Content API returned:', contentJson.code, contentJson.msg);
+						}
+					} catch (e) {
+						console.warn('[Feishu BG] Content API failed:', e);
+					}
+
+					// Strategy 2: Fall back to blocks API
+					console.log('[Feishu BG] Falling back to blocks API...');
+					const allItems: unknown[] = [];
+					let pageToken: string | undefined;
+
+					for (let page = 0; page < 20; page++) {
+						const params = new URLSearchParams({ page_size: '500' });
+						if (pageToken) params.set('page_token', pageToken);
+
+						const resp = await fetch(
+							`${apiBase}/open-apis/docx/v1/documents/${documentId}/blocks?${params}`,
+							{ headers: authHeaders },
+						);
+
+						if (!resp.ok) {
+							const text = await resp.text().catch(() => '');
+							console.warn(`[Feishu BG] Blocks HTTP ${resp.status}`, text.slice(0, 300));
+							sendResponse({ success: false, error: `HTTP ${resp.status}` });
+							return;
+						}
+
+						const json = await resp.json();
+						if (json.code !== 0) {
+							sendResponse({ success: false, error: json.msg || `API code ${json.code}` });
+							return;
+						}
+
+						allItems.push(...(json.data?.items || []));
+						if (!json.data?.has_more) break;
+						pageToken = json.data.page_token;
+					}
+
+					console.log(`[Feishu BG] Got ${allItems.length} blocks`);
+
+					// Fetch embedded sheet content
+					const sheetData: Record<string, string[][]> = {};
+					for (const item of allItems) {
+						const b = item as any;
+						if (b.block_type === 30 && b.sheet?.token) {
+							try {
+								const sheetToken = b.sheet.token as string;
+								const [spreadsheetToken, sheetId] = sheetToken.includes('_')
+									? [sheetToken.split('_')[0], sheetToken.split('_').slice(1).join('_')]
+									: [sheetToken, ''];
+								if (spreadsheetToken && sheetId) {
+									const sheetResp = await fetch(
+										`${apiBase}/open-apis/sheets/v2/spreadsheets/${spreadsheetToken}/values/${sheetId}`,
+										{ headers: authHeaders },
+									);
+									if (sheetResp.ok) {
+										const sheetJson = await sheetResp.json();
+										if (sheetJson.code === 0 && sheetJson.data?.valueRange?.values) {
+											sheetData[sheetToken] = sheetJson.data.valueRange.values;
+										}
+									}
+								}
+							} catch (e) {
+								console.warn('[Feishu BG] Failed to fetch sheet:', e);
+							}
+						}
+					}
+
+					const comments = await fetchComments(apiBase, documentId, authHeaders);
+
+					sendResponse({ success: true, blocks: allItems, accessToken, sheetData, comments });
+				} catch (err) {
+					console.error('[Feishu BG] Error:', err);
+					sendResponse({ success: false, error: (err as Error).message });
+				}
+			})();
+			return true;
+		}
+
+		if (typedRequest.action === "feishuDownloadMedia") {
+			const { url: mediaUrl, accessToken: mediaToken } = typedRequest as unknown as {
+				url: string;
+				accessToken: string;
+			};
+
+			(async () => {
+				try {
+					const resp = await fetch(mediaUrl, {
+						headers: { Authorization: `Bearer ${mediaToken}` },
+					});
+
+					if (!resp.ok) {
+						sendResponse({ success: false, error: `HTTP ${resp.status}` });
+						return;
+					}
+
+					const contentType = resp.headers.get('content-type') || 'image/png';
+					const buffer = await resp.arrayBuffer();
+					const bytes = new Uint8Array(buffer);
+					let binary = '';
+					for (let i = 0; i < bytes.length; i++) {
+						binary += String.fromCharCode(bytes[i]);
+					}
+					const base64 = btoa(binary);
+					const dataUri = `data:${contentType};base64,${base64}`;
+
+					sendResponse({ success: true, dataUri });
+				} catch (err) {
+					sendResponse({ success: false, error: (err as Error).message });
+				}
+			})();
+			return true;
+		}
+
 		if (typedRequest.action === "sidePanelOpened") {
 			if (sender.tab && sender.tab.windowId) {
 				sidePanelOpenWindows.add(sender.tab.windowId);

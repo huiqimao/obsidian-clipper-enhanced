@@ -228,7 +228,7 @@ const debouncedHighlightRefresh = debounce(() => {
 }, 300);
 
 function setupStorageListeners() {
-	browser.storage.local.onChanged.addListener((changes) => {
+	browser.storage.local.onChanged.addListener((changes: Record<string, browser.Storage.StorageChange>) => {
 		if (changes.highlights) {
 			debouncedHighlightRefresh();
 		}
@@ -653,6 +653,8 @@ async function refreshFields(tabId: number, { checkTemplateTriggers = true, rebu
 		return;
 	}
 
+	const feishuLoading = document.getElementById('feishu-loading');
+
 	try {
 		const tab = await getTabInfo(tabId);
 		if (!tab.url || isBlankPage(tab.url)) {
@@ -666,6 +668,12 @@ async function refreshFields(tabId: number, { checkTemplateTriggers = true, rebu
 		if (isRestrictedUrl(tab.url)) {
 			showError('pageCannotBeClipped');
 			return;
+		}
+
+		// Show loading indicator for Feishu pages (API extraction takes longer)
+		const isFeishuPage = tab.url && /(feishu\.cn|larksuite\.com|larkoffice\.com)/i.test(tab.url);
+		if (feishuLoading && isFeishuPage) {
+			feishuLoading.style.display = 'flex';
 		}
 
 		// Start content extraction (don't await yet)
@@ -692,6 +700,7 @@ async function refreshFields(tabId: number, { checkTemplateTriggers = true, rebu
 		}
 
 		const extractedData = await extractionPromise;
+		if (feishuLoading) feishuLoading.style.display = 'none';
 		if (extractedData) {
 			const currentUrl = tab.url;
 
@@ -712,7 +721,8 @@ async function refreshFields(tabId: number, { checkTemplateTriggers = true, rebu
 				extractedData.site,
 				extractedData.wordCount,
 				extractedData.language || '',
-				extractedData.metaTags
+				extractedData.metaTags,
+				extractedData.richMedia
 			);
 			if (initializedContent) {
 				currentVariables = initializedContent.currentVariables;
@@ -733,6 +743,7 @@ async function refreshFields(tabId: number, { checkTemplateTriggers = true, rebu
 			throw new Error('Unable to extract page content.');
 		}
 	} catch (error) {
+		if (feishuLoading) feishuLoading.style.display = 'none';
 		console.error('Error refreshing fields:', error);
 		const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
 		showError(errorMessage);

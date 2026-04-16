@@ -1,4 +1,7 @@
 import dayjs from 'dayjs';
+import advancedFormat from 'dayjs/plugin/advancedFormat';
+
+dayjs.extend(advancedFormat);
 import { HistoryEntry } from '../types/types';
 import { getMessage } from '../utils/i18n';
 
@@ -13,7 +16,7 @@ interface ChartOptions {
 	aggregation: 'day' | 'week' | 'month';
 }
 
-function formatPeriodDate(date: dayjs.Dayjs, today: dayjs.Dayjs, options: ChartOptions): string {
+function formatPeriodDate(date: any, today: any, options: ChartOptions): string {
 	switch (options.aggregation) {
 		case 'day':
 		case 'week':
@@ -202,12 +205,12 @@ export function aggregateUsageData(history: HistoryEntry[], options: ChartOption
 	
 	if (sortedHistory.length === 0) {
 		return [{
-			period: formatPeriodDate(today, today, options),
+			period: formatPeriodDate(today as any, today as any, options),
 			count: 0
 		}];
 	}
 
-	let displayStartDate: dayjs.Dayjs;
+	let displayStartDate: any;
 	let displayPeriods: number;
 
 	if (options.timeRange === 'all') {
@@ -228,7 +231,7 @@ export function aggregateUsageData(history: HistoryEntry[], options: ChartOption
 		if (options.aggregation !== 'day') {
 			periodStart = periodStart.startOf(options.aggregation);
 		}
-		const formattedDate = formatPeriodDate(periodStart, today, options);
+		const formattedDate = formatPeriodDate(periodStart as any, today as any, options);
 		periodsData.set(formattedDate, 0);
 	}
 
@@ -245,7 +248,7 @@ export function aggregateUsageData(history: HistoryEntry[], options: ChartOption
 			periodStart = periodStart.startOf(options.aggregation);
 		}
 		
-		const formattedDate = formatPeriodDate(periodStart, today, options);
+		const formattedDate = formatPeriodDate(periodStart as any, today as any, options);
 		if (periodsData.has(formattedDate)) {
 			periodsData.set(formattedDate, (periodsData.get(formattedDate) || 0) + 1);
 		}

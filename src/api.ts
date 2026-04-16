@@ -4,6 +4,7 @@
 
 import DefuddleClass from 'defuddle';
 import { createMarkdownContent } from 'defuddle/full';
+import { enrichContentWithRichMedia, extractRichMediaAssets } from './utils/rich-media-extractor';
 import { compileTemplate, SelectorProcessor } from './utils/template-compiler';
 import { AsyncResolver, RenderContext } from './utils/renderer';
 import { applyFilters } from './utils/filters';
@@ -105,7 +106,14 @@ function matchSchemaPattern(pattern: string, schemaOrgData: any): boolean {
 	if (!schemaType && !schemaKey) return false;
 
 	const schemaArray = Array.isArray(schemaOrgData) ? schemaOrgData : [schemaOrgData];
-	const flattened = schemaArray.flatMap((s: any) => Array.isArray(s) ? s : [s]);
+	const flattened = schemaArray.reduce<any[]>((acc, s: any) => {
+		if (Array.isArray(s)) {
+			acc.push(...s);
+		} else {
+			acc.push(s);
+		}
+		return acc;
+	}, []);
 
 	for (const schema of flattened) {
 		if (!schema || typeof schema !== 'object') continue;
@@ -180,20 +188,24 @@ export async function clip(options: ClipOptions): Promise<ClipResult> {
 	const doc = parsedDocument ?? documentParser.parseFromString(html, 'text/html');
 	const documentElement = doc.documentElement || doc;
 
+	// First, run rich media extraction to enrich the DOM with supported blocks
+	const richMediaResult = await extractRichMediaAssets({ document: doc as Document, url });
+
 	// Extract content with defuddle
 	// Cast through unknown: linkedom's Document is structurally compatible but not nominally typed as DOM Document
 	const defuddle = new DefuddleClass(documentElement as unknown as Document, { url });
 	const defuddleResult = defuddle.parse();
+	const enrichedContentHtml = enrichContentWithRichMedia(defuddleResult.content, richMediaResult);
 
 	// Convert to markdown
-	const markdownContent = createMarkdownContent(defuddleResult.content, url);
+	const markdownContent = createMarkdownContent(enrichedContentHtml, url);
 
 	// Build template variables
 	const variables = buildVariables({
 		title: defuddleResult.title,
 		author: defuddleResult.author,
 		content: markdownContent,
-		contentHtml: defuddleResult.content,
+		contentHtml: enrichedContentHtml,
 		url,
 		fullHtml: html,
 		description: defuddleResult.description,
@@ -206,6 +218,7 @@ export async function clip(options: ClipOptions): Promise<ClipResult> {
 		schemaOrgData: defuddleResult.schemaOrgData,
 		metaTags: defuddleResult.metaTags,
 		extractedContent: defuddleResult.variables,
+		richMedia: richMediaResult,
 	});
 
 	// Create resolvers for selector variables

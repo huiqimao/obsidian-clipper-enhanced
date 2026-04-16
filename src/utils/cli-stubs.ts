@@ -39,6 +39,10 @@ export const generalSettings: Settings = {
 		highlightActiveLine: true,
 		customCss: '',
 	},
+	feishuSettings: {
+		appId: '',
+		appSecret: '',
+	},
 	stats: {
 		addToObsidian: 0,
 		saveFile: 0,
