@@ -4,6 +4,7 @@ import { updateCurrentActiveTab, isValidUrl, isBlankPage } from './utils/active-
 import { TextHighlightData } from './utils/highlighter';
 import { debounce } from './utils/debounce';
 import { Settings } from './types/types';
+import { decryptSecret } from './utils/crypto-utils';
 
 const YOUTUBE_EMBED_RULE_ID = 9001;
 
@@ -239,7 +240,7 @@ browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime
 				try {
 					const feishuSettings = await browser.storage.sync.get('feishu_settings') as { feishu_settings?: { appId?: string; appSecret?: string } };
 					const appId = feishuSettings.feishu_settings?.appId;
-					const appSecret = feishuSettings.feishu_settings?.appSecret;
+					const appSecret = await decryptSecret(feishuSettings.feishu_settings?.appSecret ?? '');
 
 					if (!appId || !appSecret) {
 						sendResponse({ success: false, error: 'App ID and App Secret are required' });
@@ -390,7 +391,7 @@ browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime
 						console.log('[Feishu BG] Token expired, refreshing...');
 						const feishuSettings = await browser.storage.sync.get('feishu_settings') as { feishu_settings?: { appId?: string; appSecret?: string } };
 						const appId = feishuSettings.feishu_settings?.appId;
-						const appSecret = feishuSettings.feishu_settings?.appSecret;
+						const appSecret = await decryptSecret(feishuSettings.feishu_settings?.appSecret ?? '');
 
 						if (appId && appSecret && stored.feishu_user_token.refresh_token) {
 							const refreshResp = await fetch(`${apiBase}/open-apis/authen/v2/oauth/token`, {
